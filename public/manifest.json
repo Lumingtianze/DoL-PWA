@@ -1,0 +1,23 @@
+{
+  "name": "DoL 游戏启动器",
+  "short_name": "DoL Launcher",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#121212",
+  "theme_color": "#bb86fc",
+  "description": "一个 Degrees of Lewdity 的PWA离线启动器。",
+  "icons": [
+      {
+      "src": "icon.avif",
+      "sizes": "256x256",
+      "type": "image/avif",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon.png",
+      "sizes": "256x256",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

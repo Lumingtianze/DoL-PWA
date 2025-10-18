@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>游戏启动器</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="manifest" href="manifest.json">
+    <link type="image/png" rel="icon" href="icon.png">
+</head>
+<body>
+
+<div class="container">
+    <h1>Degrees of Lewdity 启动器</h1>
+
+    <div id="status-container">
+        <p>状态: <span id="status-text">正在初始化...</span></p>
+        <p>本地版本: <span id="local-version">无</span></p>
+        <p>最新版本: <span id="remote-version">查询中...</span></p>
+    </div>
+
+    <div id="mod-selection-container">
+        <label for="mod-selector">选择模组包:</label>
+        <select id="mod-selector" disabled>
+            <option>正在加载列表...</option>
+        </select>
+    </div>
+
+    <div id="progress-container" style="display: none;">
+        <p id="progress-label">正在下载...</p>
+        <progress id="progress-bar" value="0" max="100"></progress>
+    </div>
+
+    <div id="actions-container">
+        <button id="action-btn" disabled>请稍候</button>
+        <button id="clear-cache-btn" style="display: none;">清除缓存</button>
+    </div>
+</div>
+
+<!-- 启动器核心逻辑 -->
+<script src="/libs/zip-core.min.js"></script>
+<script src="launcher.js"></script>
+</body>
+</html>

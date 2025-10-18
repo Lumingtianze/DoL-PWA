@@ -1,0 +1,119 @@
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, system-ui, sans-serif;
+    background-color: #121212;
+    color: #e0e0e0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+    text-align: center;
+}
+
+.container {
+    background-color: #1e1e1e;
+    padding: 2em;
+    border-radius: 8px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+    width: 90%;
+    max-width: 400px;
+}
+
+h1 {
+    color: #bb86fc;
+}
+
+#status-container p {
+    margin: 0.5em 0;
+    font-size: 0.9em;
+}
+
+#status-container span {
+    font-weight: bold;
+    color: #03dac6;
+}
+
+/* 模组选择器样式 */
+#mod-selection-container {
+    margin: 1.5em 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5em;
+}
+
+#mod-selection-container label {
+    font-size: 0.9em;
+    color: #ccc;
+}
+
+#mod-selector {
+    width: 100%;
+    padding: 0.5em;
+    background-color: #333;
+    color: #e0e0e0;
+    border: 1px solid #555;
+    border-radius: 4px;
+    font-size: 0.9em;
+}
+
+#mod-selector:disabled {
+    opacity: 0.5;
+}
+
+
+#progress-container {
+    margin: 1.5em 0;
+}
+
+progress {
+    width: 100%;
+    height: 1.5em;
+    -webkit-appearance: none;
+    appearance: none;
+}
+progress::-webkit-progress-bar {
+    background-color: #333;
+    border-radius: 5px;
+}
+progress::-webkit-progress-value {
+    background-color: #bb86fc;
+    border-radius: 5px;
+    transition: width 0.1s linear;
+}
+
+#actions-container {
+    margin-top: 1.5em;
+    display: flex;
+    flex-direction: column;
+    gap: 1em;
+}
+
+button {
+    padding: 0.8em 1.2em;
+    font-size: 1em;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    background-color: #bb86fc;
+    color: #121212;
+    font-weight: bold;
+    transition: background-color 0.2s;
+}
+
+button:hover:not(:disabled) {
+    background-color: #a062f6;
+}
+
+button:disabled {
+    background-color: #555;
+    cursor: not-allowed;
+    color: #999;
+}
+
+#clear-cache-btn {
+    background-color: #cf6679;
+}
+#clear-cache-btn:hover {
+    background-color: #e04c62;
+}

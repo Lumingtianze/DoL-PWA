@@ -1,0 +1,9 @@
+{
+	"scripts": {
+		"build": "esbuild src/*.js --minify --outdir=public",
+		"dev": "esbuild src/*.js --watch --outdir=public"
+	},
+	"dependencies": {
+		"esbuild": "^0.25.11"
+	}
+}

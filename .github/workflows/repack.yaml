@@ -1,0 +1,151 @@
+# .github/workflows/repack.yaml
+
+name: Check Upstream and Repack Release
+
+on:
+  workflow_dispatch: # 允许手动触发
+  schedule:
+    # 每天 08:00 (UTC) 自动运行一次，检查更新
+    - cron: '0 8 * * *'
+
+jobs:
+  repack-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 检出当前仓库代码，以获取历史标签用于版本比较
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 获取所有历史和标签
+
+      # 2. 获取上游仓库的最新发布标签，并与当前仓库的最新标签进行比较
+      - name: Check for new version
+        id: version_check
+        run: |
+          # 定义上游仓库
+          UPSTREAM_REPO="DoL-Lyra/Lyra"
+          
+          # 通过 GitHub API 获取上游最新的 release 标签
+          # jq -r '.tag_name' 从JSON响应中提取标签名
+          UPSTREAM_TAG=$(curl -s "https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest" | jq -r '.tag_name')
+          
+          if [ -z "$UPSTREAM_TAG" ] || [ "$UPSTREAM_TAG" == "null" ]; then
+            echo "Error: Could not fetch upstream tag from ${UPSTREAM_REPO}. Exiting."
+            exit 1
+          fi
+
+          # 获取当前仓库最新的 git 标签
+          CURRENT_TAG=$(git tag --sort=-v:refname | head -n 1)
+
+          echo "Upstream latest tag: ${UPSTREAM_TAG}"
+          echo "Current repository latest tag: ${CURRENT_TAG}"
+
+          # 如果标签不一致，则设置一个输出变量 `needs_update` 为 true
+          if [[ "$UPSTREAM_TAG" != "$CURRENT_TAG" ]]; then
+            echo "New version found. Proceeding with repackaging."
+            echo "needs_update=true" >> $GITHUB_OUTPUT
+            echo "new_tag=${UPSTREAM_TAG}" >> $GITHUB_OUTPUT
+          else
+            echo "No new version found. Nothing to do."
+            echo "needs_update=false" >> $GITHUB_OUTPUT
+          fi
+
+      # 3. 安装 7zip 以使用 7z 命令
+      - name: Install 7-Zip
+        if: steps.version_check.outputs.needs_update == 'true'
+        run: sudo apt-get update && sudo apt-get install -y 7zip
+
+      # 4. 并行下载、处理并重新打包所有上游资源
+      - name: Download and Repack all Assets in Parallel
+        if: steps.version_check.outputs.needs_update == 'true'
+        run: |
+          # 获取CPU核心数作为最大并发任务数
+          MAX_JOBS=$(nproc)
+          echo "Starting parallel processing with a maximum of ${MAX_JOBS} jobs."
+
+          # 创建用于存放最终产物的目录
+          FINAL_OUTPUT_DIR="repacked_release"
+          mkdir -p $FINAL_OUTPUT_DIR
+
+          # 使用进程替换 < <(...) 来将 curl 的输出重定向到 while 循环。
+          # 这种方式可以确保 while 循环在主 Shell 中运行，从而让后续的 'wait' 命令能够正确地等待所有后台任务。
+          while IFS=';' read -r ASSET_NAME ASSET_URL; do
+            # 控制并发任务数量，当达到 CPU 核心数时等待一个任务完成
+            if [[ $(jobs -p | wc -l) -ge $MAX_JOBS ]]; then
+              wait -n
+            fi
+
+            # 在隔离的子-shell中并行处理每个资源，避免变量和路径冲突
+            (
+              echo "--- Starting: ${ASSET_NAME} ---"
+            
+              TEMP_WORKDIR="temp_${ASSET_NAME%.zip}"
+              mkdir -p $TEMP_WORKDIR
+            
+              # 进入独立的临时工作目录
+              cd $TEMP_WORKDIR
+
+              # 下载原始的 ZIP 文件
+              echo "[${ASSET_NAME}] Downloading..."
+              wget -q -O source.zip "${ASSET_URL}"
+            
+              # 解压资源
+              7z x source.zip > /dev/null
+
+              # 找到 HTML 文件 (通常是 'Degrees of Lewdity.html')
+              HTML_FILE=$(find . -maxdepth 1 -name "*.html" -print -quit)
+            
+              if [ -z "$HTML_FILE" ]; then
+                echo "Error: No HTML file found in ${ASSET_NAME}"
+                # 清理并退出子-shell
+                rm -rf ../${TEMP_WORKDIR}
+                exit 1
+              fi
+            
+              # 1. 将 img 目录无压缩地打包为 img.zip
+              echo "[${ASSET_NAME}] Creating uncompressed img.zip..."
+              7z a -tzip -mx=0 img.zip ./img > /dev/null
+            
+              # 2. 将 .html 和 img.zip 使用标准压缩打包为最终产物
+              echo "[${ASSET_NAME}] Creating final package..."
+              7z a -tzip -mmt=on -mx=5 "../${FINAL_OUTPUT_DIR}/${ASSET_NAME}" "${HTML_FILE}" img.zip > /dev/null
+            
+              # 清理临时文件
+              cd ..
+              rm -rf $TEMP_WORKDIR
+            
+              echo "--- Finished: ${ASSET_NAME} ---"
+            ) & # 将整个子-shell任务放入后台执行
+          # 调用 API 获取 release 信息，筛选出所有非 polyfill 的 zip 资源
+          done < <(curl -s "https://api.github.com/repos/DoL-Lyra/Lyra/releases/latest" | jq -r '.assets[] | select(.name | endswith(".zip") and (contains("polyfill") | not)) | "\(.name);\(.browser_download_url)"')
+
+          # 等待所有剩余的后台打包任务完成
+          echo "Waiting for all background jobs to complete..."
+          wait
+          echo "All assets have been processed."
+
+      # 5. 创建新的 Release 并上传所有重新打包好的文件 (仅当需要更新时运行)
+      - name: Create Release and Upload Assets
+        if: steps.version_check.outputs.needs_update == 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          # 使用从 version_check 步骤获取的新标签
+          tag_name: ${{ steps.version_check.outputs.new_tag }}
+          name: Release ${{ steps.version_check.outputs.new_tag }}
+          body: |
+            Automatic release based on upstream version ${{ steps.version_check.outputs.new_tag }}.
+            Assets are repacked for PWA launcher.
+          # 使用通配符上传 repacked_release 目录下的所有 zip 文件
+          files: repacked_release/*.zip
+          # GITHUB_TOKEN 是由 Actions 自动提供的，无需手动设置 secret
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # 6. 清理旧的工作流运行记录
+      # 这个步骤会在每次工作流成功运行后执行，以保持 Actions 列表的整洁
+      - name: Clean up old workflow runs
+        # 这是一个维护性步骤，用于保持 Actions 页面整洁
+        uses: FunctionXJB/delete-workflow-runs@main
+        with:
+          retain_days: 1
+          keep_minimum_runs: 1
