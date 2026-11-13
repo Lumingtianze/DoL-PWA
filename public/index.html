@@ -2,40 +2,81 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8"/>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <title>游戏启动器</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+    <meta name="theme-color" content="#0b0f19"/>
+    <title>Degrees of Lewdity启动器</title>
     <link rel="stylesheet" href="style.css">
     <link rel="manifest" href="manifest.json">
     <link type="image/png" rel="icon" href="icon.png">
 </head>
 <body>
 
-<div class="container">
-    <h1>Degrees of Lewdity 启动器</h1>
+<main class="launcher-shell">
+    <section class="launcher-card" aria-labelledby="launcher-title">
+        <header class="card-header">
+            <div class="brand-group">
+                <img class="brand-icon" src="icon.png" alt="启动器图标" width="40" height="40">
+                <div class="brand-text">
+                    <h1 id="launcher-title">DoL启动器</h1>
+                    <p class="brand-subtitle">Degrees of Lewdity PWA启动器</p>
+                </div>
+            </div>
+            <span id="network-badge" class="network-badge" data-online="true">在线</span>
+        </header>
 
-    <div id="status-container">
-        <p>状态: <span id="status-text">正在初始化...</span></p>
-        <p>本地版本: <span id="local-version">无</span></p>
-        <p>最新版本: <span id="remote-version">查询中...</span></p>
-    </div>
+        <div id="status-banner" class="status-banner" data-state="info" role="status" aria-live="polite">
+            <span class="status-indicator" aria-hidden="true"></span>
+            <p id="status-text" class="status-text">正在初始化...</p>
+        </div>
 
-    <div id="mod-selection-container">
-        <label for="mod-selector">选择模组包:</label>
-        <select id="mod-selector" disabled>
-            <option>正在加载列表...</option>
-        </select>
-    </div>
+        <section class="version-grid" aria-label="版本信息">
+            <div class="version-card">
+                <span class="version-label">本地版本</span>
+                <strong id="local-version" class="version-value">检查中...</strong>
+                <span id="local-mod" class="version-sub"></span>
+            </div>
+            <div class="version-card">
+                <div class="version-label-row">
+                    <span class="version-label">最新版本</span>
+                    <div class="version-label-actions">
+                        <span id="remote-prerelease-badge" class="prerelease-badge" hidden>预发行</span>
+                        <button id="refresh-btn" type="button" class="text-btn">刷新</button>
+                    </div>
+                </div>
+                <strong id="remote-version" class="version-value">查询中...</strong>
+            </div>
+        </section>
 
-    <div id="progress-container" style="display: none;">
-        <p id="progress-label">正在下载...</p>
-        <progress id="progress-bar" value="0" max="100"></progress>
-    </div>
+        <section class="controls-section">
+            <div class="toggle-row">
+                <label class="toggle-label" for="prerelease-toggle">包含预发行版本</label>
+                <input id="prerelease-toggle" class="toggle-switch" type="checkbox" checked>
+            </div>
 
-    <div id="actions-container">
-        <button id="action-btn" disabled>请稍候</button>
-        <button id="clear-cache-btn" style="display: none;">清除缓存</button>
-    </div>
-</div>
+            <div class="field-group">
+                <label class="field-label" for="mod-selector">选择模组包</label>
+                <div class="select-wrapper">
+                    <select id="mod-selector" disabled>
+                        <option>正在加载列表...</option>
+                    </select>
+                </div>
+            </div>
+        </section>
+
+        <section id="progress-container" class="progress-section" hidden>
+            <div class="progress-header">
+                <span id="progress-label" class="progress-label">正在下载...</span>
+                <span id="progress-stats" class="progress-stats">0%</span>
+            </div>
+            <progress id="progress-bar" value="0" max="100"></progress>
+        </section>
+
+        <footer class="actions-section">
+            <button id="action-btn" type="button" class="primary-btn" data-action="idle" disabled>请稍候</button>
+            <button id="clear-cache-btn" type="button" class="danger-btn" hidden>清除缓存</button>
+        </footer>
+    </section>
+</main>
 
 <!-- 启动器核心逻辑 -->
 <script src="/libs/zip-core.min.js"></script>

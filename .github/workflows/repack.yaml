@@ -19,36 +19,62 @@ jobs:
         with:
           fetch-depth: 0 # 获取所有历史和标签
 
-      # 2. 获取上游仓库的最新发布标签，并与当前仓库的最新标签进行比较
+      # 2. 获取上游仓库的最新发布标签（含预发行版），并与当前仓库标签进行比较
       - name: Check for new version
         id: version_check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           # 定义上游仓库
           UPSTREAM_REPO="DoL-Lyra/Lyra"
-          
-          # 通过 GitHub API 获取上游最新的 release 标签
-          # jq -r '.tag_name' 从JSON响应中提取标签名
-          UPSTREAM_TAG=$(curl -s "https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest" | jq -r '.tag_name')
-          
-          if [ -z "$UPSTREAM_TAG" ] || [ "$UPSTREAM_TAG" == "null" ]; then
-            echo "Error: Could not fetch upstream tag from ${UPSTREAM_REPO}. Exiting."
+
+          # 通过 GitHub API 获取上游近期发布列表，包含预发行版本并过滤草稿及无 zip 产物的条目
+          curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${UPSTREAM_REPO}/releases?per_page=10" > /tmp/all_releases.json
+
+          jq '
+            [
+              .[]
+              | select(.draft == false)
+              | select((.assets | map(select(.name | endswith(".zip") and (contains("polyfill") | not))) | length) > 0)
+            ]
+            | sort_by(.published_at // .created_at)
+            | reverse
+            | .[0] // empty
+          ' /tmp/all_releases.json > /tmp/latest_release.json
+
+          if [ ! -s /tmp/latest_release.json ]; then
+            echo "错误: 未能从 ${UPSTREAM_REPO} 获取到包含有效资源的发布版本。"
             exit 1
           fi
 
-          # 获取当前仓库最新的 git 标签
-          CURRENT_TAG=$(git tag --sort=-v:refname | head -n 1)
+          # 提取上游最新标签名与预发行标记
+          UPSTREAM_TAG=$(jq -r '.tag_name' /tmp/latest_release.json)
+          IS_PRERELEASE=$(jq -r '.prerelease' /tmp/latest_release.json)
 
-          echo "Upstream latest tag: ${UPSTREAM_TAG}"
-          echo "Current repository latest tag: ${CURRENT_TAG}"
+          if [ -z "$UPSTREAM_TAG" ] || [ "$UPSTREAM_TAG" == "null" ]; then
+            echo "错误: 无法解析 ${UPSTREAM_REPO} 的上游标签，退出。"
+            exit 1
+          fi
 
-          # 如果标签不一致，则设置一个输出变量 `needs_update` 为 true
-          if [[ "$UPSTREAM_TAG" != "$CURRENT_TAG" ]]; then
-            echo "New version found. Proceeding with repackaging."
-            echo "needs_update=true" >> $GITHUB_OUTPUT
-            echo "new_tag=${UPSTREAM_TAG}" >> $GITHUB_OUTPUT
+          # 获取当前仓库最近创建的 git 标签用于日志展示
+          CURRENT_TAG=$(git for-each-ref --sort=-creatordate --count=1 --format='%(refname:short)' refs/tags)
+
+          echo "上游最新标签: ${UPSTREAM_TAG} (预发行: ${IS_PRERELEASE})"
+          echo "当前仓库最新标签: ${CURRENT_TAG}"
+
+          # 校验目标标签是否已存在于当前仓库，避免版本号排序差异引发重复构建
+          if ! git rev-parse -q --verify "refs/tags/${UPSTREAM_TAG}" >/dev/null; then
+            echo "发现新版本，准备执行重新打包。"
+            echo "needs_update=true" >> "$GITHUB_OUTPUT"
+            echo "new_tag=${UPSTREAM_TAG}" >> "$GITHUB_OUTPUT"
+            echo "is_prerelease=${IS_PRERELEASE}" >> "$GITHUB_OUTPUT"
           else
-            echo "No new version found. Nothing to do."
-            echo "needs_update=false" >> $GITHUB_OUTPUT
+            echo "未发现新版本，跳过本次构建。"
+            echo "needs_update=false" >> "$GITHUB_OUTPUT"
           fi
 
       # 3. 安装 7zip 以使用 7z 命令
@@ -60,82 +86,129 @@ jobs:
       - name: Download and Repack all Assets in Parallel
         if: steps.version_check.outputs.needs_update == 'true'
         run: |
+          set -euo pipefail
           # 获取CPU核心数作为最大并发任务数
           MAX_JOBS=$(nproc)
-          echo "Starting parallel processing with a maximum of ${MAX_JOBS} jobs."
+          echo "开始并行处理资源包，最大并发任务数: ${MAX_JOBS}"
 
+          BASE_DIR=$(pwd)
           # 创建用于存放最终产物的目录
-          FINAL_OUTPUT_DIR="repacked_release"
-          mkdir -p $FINAL_OUTPUT_DIR
+          FINAL_OUTPUT_DIR="${BASE_DIR}/repacked_release"
+          mkdir -p "$FINAL_OUTPUT_DIR"
 
-          # 使用进程替换 < <(...) 来将 curl 的输出重定向到 while 循环。
-          # 这种方式可以确保 while 循环在主 Shell 中运行，从而让后续的 'wait' 命令能够正确地等待所有后台任务。
+          # 若 /dev/shm 空间充足，将大量碎文件的临时解压操作放入内存盘以减少磁盘 IO 开销
+          WORK_BASE="$BASE_DIR"
+          if [ -d /dev/shm ] && [ "$(df -Pm /dev/shm | awk 'NR==2{print $4}')" -ge 2048 ]; then
+            WORK_BASE="/dev/shm/dol_repack"
+            mkdir -p "$WORK_BASE"
+            echo "已启用 /dev/shm 作为临时工作区。"
+          fi
+
+          PIDS=()
+
+          # 读取版本检查阶段缓存的 release JSON，确保下载资源与目标版本一致且不重复请求 API
           while IFS=';' read -r ASSET_NAME ASSET_URL; do
-            # 控制并发任务数量，当达到 CPU 核心数时等待一个任务完成
-            if [[ $(jobs -p | wc -l) -ge $MAX_JOBS ]]; then
-              wait -n
-            fi
+            # 控制并发任务数量，当运行中的后台任务达到 CPU 核心数时短暂等待
+            while [[ $(jobs -r -p | wc -l) -ge $MAX_JOBS ]]; do
+              sleep 0.2
+            done
 
             # 在隔离的子-shell中并行处理每个资源，避免变量和路径冲突
             (
-              echo "--- Starting: ${ASSET_NAME} ---"
-            
-              TEMP_WORKDIR="temp_${ASSET_NAME%.zip}"
-              mkdir -p $TEMP_WORKDIR
-            
-              # 进入独立的临时工作目录
-              cd $TEMP_WORKDIR
+              set -euo pipefail
+              echo "--- 开始处理: ${ASSET_NAME} ---"
 
-              # 下载原始的 ZIP 文件
-              echo "[${ASSET_NAME}] Downloading..."
-              wget -q -O source.zip "${ASSET_URL}"
-            
+              TEMP_WORKDIR="${WORK_BASE}/temp_${ASSET_NAME%.zip}"
+              OUT_ZIP="${FINAL_OUTPUT_DIR}/${ASSET_NAME}"
+              rm -rf "$TEMP_WORKDIR" "$OUT_ZIP"
+              mkdir -p "$TEMP_WORKDIR"
+
+              # 进入独立的临时工作目录
+              cd "$TEMP_WORKDIR"
+
+              # 下载原始的 ZIP 文件，启用重试避免网络抖动失败
+              echo "[${ASSET_NAME}] 正在下载..."
+              curl -fsSL --retry 3 --connect-timeout 20 -o source.zip "${ASSET_URL}"
+
               # 解压资源
               7z x source.zip > /dev/null
+              rm -f source.zip
 
               # 找到 HTML 文件 (通常是 'Degrees of Lewdity.html')
-              HTML_FILE=$(find . -maxdepth 1 -name "*.html" -print -quit)
-            
+              HTML_FILE=$(find . -maxdepth 1 -type f -name "*.html" -printf "%f\n" -quit)
+
               if [ -z "$HTML_FILE" ]; then
-                echo "Error: No HTML file found in ${ASSET_NAME}"
-                # 清理并退出子-shell
-                rm -rf ../${TEMP_WORKDIR}
+                echo "错误: 在 ${ASSET_NAME} 中未找到 HTML 文件"
+                cd "$BASE_DIR"
+                rm -rf "$TEMP_WORKDIR"
                 exit 1
               fi
-            
-              # 1. 将 img 目录无压缩地打包为 img.zip
-              echo "[${ASSET_NAME}] Creating uncompressed img.zip..."
-              7z a -tzip -mx=0 img.zip ./img > /dev/null
-            
-              # 2. 将 .html 和 img.zip 使用标准压缩打包为最终产物
-              echo "[${ASSET_NAME}] Creating final package..."
-              7z a -tzip -mmt=on -mx=5 "../${FINAL_OUTPUT_DIR}/${ASSET_NAME}" "${HTML_FILE}" img.zip > /dev/null
-            
-              # 清理临时文件
-              cd ..
-              rm -rf $TEMP_WORKDIR
-            
-              echo "--- Finished: ${ASSET_NAME} ---"
-            ) & # 将整个子-shell任务放入后台执行
-          # 调用 API 获取 release 信息，筛选出所有非 polyfill 的 zip 资源
-          done < <(curl -s "https://api.github.com/repos/DoL-Lyra/Lyra/releases/latest" | jq -r '.assets[] | select(.name | endswith(".zip") and (contains("polyfill") | not)) | "\(.name);\(.browser_download_url)"')
 
-          # 等待所有剩余的后台打包任务完成
-          echo "Waiting for all background jobs to complete..."
-          wait
-          echo "All assets have been processed."
+              if [ ! -d "img" ]; then
+                echo "错误: 在 ${ASSET_NAME} 中未找到 img 目录"
+                cd "$BASE_DIR"
+                rm -rf "$TEMP_WORKDIR"
+                exit 1
+              fi
+
+              # 1. 将 img 目录无压缩地打包为 img.zip
+              echo "[${ASSET_NAME}] 正在生成无压缩 img.zip..."
+              7z a -tzip -mx=0 img.zip ./img > /dev/null
+              rm -rf ./img
+
+              # 2. 仅对 HTML 使用均衡压缩，随后以无压缩 (-mx=0) 追加 img.zip 跳过二次压缩
+              echo "[${ASSET_NAME}] 正在打包最终产物..."
+              7z a -tzip -mmt=1 -mx=5 "$OUT_ZIP" "${HTML_FILE}" > /dev/null
+              rm -f "${HTML_FILE}"
+              7z a -tzip -mx=0 "$OUT_ZIP" img.zip > /dev/null
+
+              # 清理临时文件
+              cd "$BASE_DIR"
+              rm -rf "$TEMP_WORKDIR"
+
+              echo "--- 处理完成: ${ASSET_NAME} ---"
+            ) & # 将整个子-shell任务放入后台执行
+            PIDS+=($!)
+          done < <(jq -r '.assets[] | select(.name | endswith(".zip") and (contains("polyfill") | not)) | "\(.name);\(.browser_download_url)"' /tmp/latest_release.json)
+
+          if [ ${#PIDS[@]} -eq 0 ]; then
+            echo "错误: 未匹配到任何可供打包的 zip 资源。"
+            exit 1
+          fi
+
+          # 逐个检查后台任务退出状态，任一资源失败即中止创建 Release
+          echo "正在等待所有后台打包任务完成..."
+          FAILED=0
+          for pid in "${PIDS[@]}"; do
+            if ! wait "$pid"; then
+              FAILED=1
+            fi
+          done
+
+          if [ "$WORK_BASE" != "$BASE_DIR" ]; then
+            rm -rf "$WORK_BASE"
+          fi
+          rm -f /tmp/all_releases.json /tmp/latest_release.json
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "错误: 部分资源处理失败，已中止创建 Release。"
+            exit 1
+          fi
+
+          echo "所有资源处理完成。"
 
       # 5. 创建新的 Release 并上传所有重新打包好的文件 (仅当需要更新时运行)
       - name: Create Release and Upload Assets
         if: steps.version_check.outputs.needs_update == 'true'
         uses: softprops/action-gh-release@v1
         with:
-          # 使用从 version_check 步骤获取的新标签
+          # 使用从 version_check 步骤获取的新标签，并同步上游的预发行标记
           tag_name: ${{ steps.version_check.outputs.new_tag }}
           name: Release ${{ steps.version_check.outputs.new_tag }}
+          prerelease: ${{ steps.version_check.outputs.is_prerelease == 'true' }}
           body: |
-            Automatic release based on upstream version ${{ steps.version_check.outputs.new_tag }}.
-            Assets are repacked for PWA launcher.
+            基于上游版本 ${{ steps.version_check.outputs.new_tag }} 自动构建。
+            资源已重新打包以适配 PWA 启动器。
           # 使用通配符上传 repacked_release 目录下的所有 zip 文件
           files: repacked_release/*.zip
           # GITHUB_TOKEN 是由 Actions 自动提供的，无需手动设置 secret

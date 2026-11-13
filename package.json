@@ -1,7 +1,7 @@
 {
 	"scripts": {
-		"build": "esbuild src/*.js --minify --outdir=public",
-		"dev": "esbuild src/*.js --watch --outdir=public"
+		"build": "esbuild src/*.js --minify --target=es2022 --outdir=public",
+		"dev": "esbuild src/*.js --watch --target=es2022 --outdir=public"
 	},
 	"dependencies": {
 		"esbuild": "^0.25.11"
